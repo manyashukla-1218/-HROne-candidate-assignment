@@ -1,11 +1,17 @@
 # DECISIONS
 
-**1. Indexes.** `employees`: unique `emp_code` (identity, duplicate -> 409), `(department, emp_code)`, `(department, joined_on)` and `joined_on` for listing and headcount. `attendance_logs`: unique `(emp_code, date)` (race guard, monthly and lookup queries), `(date -1, emp_code)` for the list sort and month scans, `(status, date -1, emp_code)` for status filters, `(emp_code, punch_in -1)` for punch-out.
+**1. Indexes I created.**
+On `employees` I made a unique index on `emp_code`, because it is the identity and duplicates must fail. I also added `(department, emp_code)`, `(department, joined_on)` and `joined_on`, which the list, headcount and summary queries use.
+On `attendance_logs` I made a unique `(emp_code, date)` index. It stops double records and also speeds up the monthly queries. `(date desc, emp_code)` serves the list sort and month scans. `(status, date desc, emp_code)` covers status filters, and `(emp_code, punch_in desc)` helps punch-out find the latest record.
 
-**2. Two identical punch-ins at the same instant.** Both compute the same attendance date and try to insert. The unique `(emp_code, date)` index lets exactly one insert succeed; the other gets DuplicateKeyError and I return 409. There is no check-then-insert.
+**2. Two punch-ins at the same instant.**
+Both requests work out the same date and both try to insert. I deliberately did not check first and then insert, because both checks could pass. The unique `(emp_code, date)` index lets only one insert win. The other gets a DuplicateKeyError and I turn that into a 409.
 
-**3. Tie at the leaderboard cutoff.** `$setWindowFields` with `$rank` gives competition ranking (1, 2, 2, 4). `limit` filters `rank <= limit` after ranking, so everyone tied at the cutoff is returned; limit 2 over 1, 2, 2, 4 returns three rows.
+**3. A tie at the leaderboard cutoff.**
+I use `$rank`, so ties share a rank and the next one is skipped (1, 2, 2, 4). The limit is applied after ranking, on `rank <= limit`. So with limit 2 and ranks 1, 2, 2, 4, I return three rows, because both tied people deserve their place.
 
-**4. Employees with no logs.** The summary pipeline starts from `employees` (`joined_on` <= month end), `$lookup`s the logs and `$unwind`s with preserveNullAndEmptyArrays. Headcount is the set of distinct `emp_code`s, so people with zero logs count and later joiners do not.
+**4. Employees with no logs.**
+The department summary starts from `employees`, not from logs. I take everyone with `joined_on` on or before the month end, then `$lookup` their logs and keep empty ones with `preserveNullAndEmptyArrays`. Headcount counts distinct `emp_code`s, so people with no logs still count and people who join later do not.
 
-**5. 100x the data.** Pre-aggregated monthly rollups instead of scanning logs, department copied onto each log (no `$lookup`), keyset pagination instead of `skip`, sharding by `emp_code`, archiving old months, and caching analytics.
+**5. With 100 times more data.**
+I would store monthly roll-ups instead of scanning raw logs, and copy the department onto each log to avoid the `$lookup`. I would switch from `skip` to keyset pagination, shard by `emp_code`, archive old months, and cache the analytics results.
